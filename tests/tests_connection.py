@@ -12,7 +12,7 @@ def test_trello():
     url = f"https://api.trello.com/1/members/me?key={os.getenv('TRELLO_API_KEY')}&token={os.getenv('TRELLO_TOKEN')}"
     res = requests.get(url)
     print("Status:", res.status_code)
-    print("Response Text:", res.json())  # Instead of JSON
+    print("Response Text:", res.json())  
 
 
 # Test Google Sheets Auth
