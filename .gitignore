@@ -1,0 +1,5 @@
+.env
+*.json
+*.sqlite
+__pycache__/
+*.pyc
