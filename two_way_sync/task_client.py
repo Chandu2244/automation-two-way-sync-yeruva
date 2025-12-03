@@ -86,7 +86,12 @@ class TrelloClient:
             self.set_lead_id(card["id"], lead_id)
             self.set_email(card["id"], email)
 
-            self.mapping_store.set_mapping(lead_id, card["id"])
+            self.mapping_store.upsert(
+            lead_id,
+            trello_card_id=card["id"],
+            trello_status=status,
+            trello_timestamp=card["dateLastActivity"]
+            )
             log_info(f"Created card for lead {lead_id} in {status}")
             return card
 
@@ -94,29 +99,28 @@ class TrelloClient:
         return None
 
     def sync_card_for_lead(self, name, lead_id, status="TODO", email=""):
-        existing_card_id = self.mapping_store.get_card_id(lead_id)
+        mapping = self.mapping_store.get(lead_id)
+        if mapping and mapping.get("trello_card_id"):
+            card_id = mapping["trello_card_id"]
+            self.update_status(card_id, status, lead_id)
+            return
 
-        if existing_card_id:
-            self.update_status(existing_card_id, status)
-            self.set_email(existing_card_id, email)
-            return {"id": existing_card_id}
 
         return self.create_card(name, lead_id, status, email)
 
-    def update_status(self, card_id, status):
+    def update_status(self, card_id, status, lead_id):
         list_id = self.STATUS_TO_LIST.get(status)
-        if not list_id:
-            log_error(f"Unknown status: {status}")
-            return
-
         url = f"{self.BASE_URL}/cards/{card_id}"
         params = {**self.auth_params, "idList": list_id}
-
         res = requests.put(url, params=params)
+
         if res.status_code == 200:
-            log_info(f"Moved card {card_id} → {status}")
-        else:
-            log_error(f"Failed list move: {res.text}")
+            card = res.json()
+            self.mapping_store.upsert(
+                lead_id,
+                trello_status=status,
+                trello_timestamp=card["dateLastActivity"],
+            )
 
     # ------------------------------------------------
     # Custom Field Setting
