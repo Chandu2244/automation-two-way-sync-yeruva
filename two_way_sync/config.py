@@ -6,6 +6,7 @@ load_dotenv()
 # Trello Auth
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+TRELLO_BOARD_SHORT_ID = os.getenv("TRELLO_BOARD_SHORT_ID")
 TRELLO_BOARD_ID = os.getenv("TRELLO_BOARD_ID")
 
 # Google Sheets Auth

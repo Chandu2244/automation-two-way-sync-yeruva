@@ -2,7 +2,7 @@ import requests
 from two_way_sync.config import (
     TRELLO_API_KEY,
     TRELLO_TOKEN,
-    TRELLO_BOARD_ID,
+    TRELLO_BOARD_SHORT_ID,
     TODO_LIST_ID,
     IN_PROGRESS_LIST_ID,
     DONE_LIST_ID
@@ -38,7 +38,7 @@ class TrelloClient:
         if field_name in self.custom_fields:
             return self.custom_fields[field_name]
 
-        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/customFields"
+        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_SHORT_ID}/customFields"
         res = requests.get(url, params=self.auth)
 
         if res.status_code != 200:
@@ -172,7 +172,7 @@ class TrelloClient:
         return None
 
     def get_cards_with_lead_and_status(self):
-        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/cards"
+        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_SHORT_ID}/cards"
         res = requests.get(url, params=self.auth)
 
         if res.status_code != 200:
@@ -205,7 +205,7 @@ class TrelloClient:
             return None
 
         # Fetch all archived cards
-        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/cards"
+        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_SHORT_ID}/cards"
         params = {**self.auth, "filter": "closed"}
         res = requests.get(url, params=params)
 
