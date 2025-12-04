@@ -102,10 +102,18 @@ class TrelloClient:
     def sync_card_for_lead(self, name, lead_id, status, email=""):
         mapping = self.store.get(lead_id)
 
+        # If exists in mapping → just update
         if mapping and mapping.get("trello_card_id"):
             return self.update_status(mapping["trello_card_id"], status, lead_id)
 
+        # If not mapped → restore from archive if available
+        restored = self.restore_archived_card_if_exists(lead_id, status)
+        if restored:
+            return restored
+
+        # Else → create card fresh
         return self.create_card(name, lead_id, status, email)
+
 
     def update_status(self, card_id, status, lead_id):
         list_id = self.STATUS_TO_LIST.get(status)
@@ -189,3 +197,46 @@ class TrelloClient:
 
         log_info(f"🔍 Reverse Sync Found {len(cards)} mapped Trello cards")
         return cards
+    
+    
+    def restore_archived_card_if_exists(self, lead_id, new_status):
+        field_id = self._get_custom_field_id("lead_id")
+        if not field_id:
+            return None
+
+        # Fetch all archived cards
+        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/cards"
+        params = {**self.auth, "filter": "closed"}
+        res = requests.get(url, params=params)
+
+        if res.status_code != 200:
+            log_error(f"Failed fetch archived cards: {res.text}")
+            return None
+
+        for card in res.json():
+            card_id = card["id"]
+            # check if archived card has same lead_id
+            archived_lead_id = self._get_field_value(card_id, "lead_id")
+            if archived_lead_id != lead_id:
+                continue
+
+            # Unarchive AND move to correct list
+            restore_url = f"{self.BASE_URL}/cards/{card_id}"
+            restore_params = {**self.auth, "closed": "false", "idList": self.STATUS_TO_LIST[new_status]}
+            restore_res = requests.put(restore_url, params=restore_params)
+
+            if restore_res.status_code == 200:
+                card_data = restore_res.json()
+
+                self.store.upsert(
+                    lead_id,
+                    trello_card_id=card_id,
+                    trello_status=new_status,
+                    trello_timestamp=card_data["dateLastActivity"]
+                )
+
+                log_info(f"🔁 Restored archived card for Lead {lead_id} → {new_status}")
+                return card_data
+
+        return None
+

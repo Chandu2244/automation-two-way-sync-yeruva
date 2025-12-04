@@ -34,6 +34,20 @@ def run_partial_sync(lead_id, name, email, sheet_status, sheet_timestamp):
     trello_client = TrelloClient()
     existing = store.get(lead_id)
 
+    # Archive cards for IDs removed from Sheet
+    lead_client = LeadClient()
+    sheet_ids = {lead["id"] for lead in lead_client.get_all_leads()}
+    stored_ids = set(store.get_all_lead_ids())
+    deleted_ids = stored_ids - sheet_ids
+
+    for deleted_id in deleted_ids:
+        mapping = store.get(deleted_id)
+        card_id = mapping.get("trello_card_id")
+        if card_id:
+            trello_client.archive_card(card_id)
+            log_info(f"🗑 Archived due to deletion: {deleted_id}")
+        store.delete(deleted_id)
+
     # LOST → Archive card
     if sheet_status == "LOST":
         if existing and existing.get("trello_card_id"):

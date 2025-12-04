@@ -25,9 +25,9 @@ class MappingStore:
         conn.commit()
         conn.close()
 
-    # --------------------------------
-    # CRUD Operations
-    # --------------------------------
+    # --------------------------------------
+    # Getters
+    # --------------------------------------
     def get(self, lead_id):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -50,38 +50,40 @@ class MappingStore:
             "sheet_timestamp": row[4],
         }
 
-    def get_card_id(self, lead_id):
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT trello_card_id FROM mapping WHERE lead_id=?", (lead_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        return row[0] if row else None
+    def exists(self, lead_id):
+        return self.get(lead_id) is not None
 
+    def get_card_id(self, lead_id):
+        row = self.get(lead_id)
+        return row["trello_card_id"] if row else None
+
+    # --------------------------------------
+    # UPSERT
+    # --------------------------------------
     def upsert(self, lead_id, trello_card_id=None, trello_status=None,
                trello_timestamp=None, sheet_status=None, sheet_timestamp=None):
-        existing = self.get(lead_id)
 
-        trello_card_id = trello_card_id or (existing.get("trello_card_id") if existing else None)
-        trello_status = trello_status or (existing.get("trello_status") if existing else None)
-        trello_timestamp = trello_timestamp or (existing.get("trello_timestamp") if existing else None)
-        sheet_status = sheet_status or (existing.get("sheet_status") if existing else None)
-        sheet_timestamp = sheet_timestamp or (existing.get("sheet_timestamp") if existing else None)
+        existing = self.get(lead_id) or {}
+        trello_card_id = trello_card_id or existing.get("trello_card_id")
+        trello_status = trello_status or existing.get("trello_status")
+        trello_timestamp = trello_timestamp or existing.get("trello_timestamp")
+        sheet_status = sheet_status or existing.get("sheet_status")
+        sheet_timestamp = sheet_timestamp or existing.get("sheet_timestamp")
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO mapping 
-            (lead_id, trello_card_id, trello_status, trello_timestamp,
-             sheet_status, sheet_timestamp)
+            (lead_id, trello_card_id, trello_status, trello_timestamp, sheet_status, sheet_timestamp)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (lead_id, trello_card_id, trello_status, trello_timestamp,
-              sheet_status, sheet_timestamp))
+        """, (lead_id, trello_card_id, trello_status,
+              trello_timestamp, sheet_status, sheet_timestamp))
         conn.commit()
         conn.close()
 
+    # --------------------------------------
+    # DELETE
+    # --------------------------------------
     def delete(self, lead_id):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -93,6 +95,6 @@ class MappingStore:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT lead_id FROM mapping")
-        rows = cursor.fetchall()
+        ids = [row[0] for row in cursor.fetchall()]
         conn.close()
-        return [r[0] for r in rows]
+        return ids
