@@ -7,15 +7,13 @@ from two_way_sync.config import (
     IN_PROGRESS_LIST_ID,
     DONE_LIST_ID
 )
-from two_way_sync.utils.logger import log_info, log_error
 from two_way_sync.db.mapping_store import MappingStore
-
+from two_way_sync.utils.logger import log_info, log_error
 
 
 class TrelloClient:
     BASE_URL = "https://api.trello.com/1"
 
-    # Status mapping (Single Source of Truth)
     STATUS_TO_LIST = {
         "TODO": TODO_LIST_ID,
         "IN_PROGRESS": IN_PROGRESS_LIST_ID,
@@ -29,41 +27,46 @@ class TrelloClient:
     }
 
     def __init__(self):
-        self.auth_params = {
-            "key": TRELLO_API_KEY,
-            "token": TRELLO_TOKEN,
-        }
-        self.lead_field_id = None  # custom field id for lead_id
-        self.email_field_id = None  # custom field id for email
-        self.mapping_store = MappingStore()
+        self.auth = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
+        self.store = MappingStore()
+        self.custom_fields = {}  # Cache field IDs
 
     # ------------------------------------------------
-    # Custom Field Lookups
+    # Custom Field Utilities
     # ------------------------------------------------
-    def _get_custom_field_id_by_name(self, field_name):
+    def _get_custom_field_id(self, field_name):
+        if field_name in self.custom_fields:
+            return self.custom_fields[field_name]
+
         url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/customFields"
-        res = requests.get(url, params=self.auth_params)
+        res = requests.get(url, params=self.auth)
 
         if res.status_code != 200:
-            log_error(f"Failed to fetch custom fields: {res.text}")
+            log_error(f"❌ Failed fetch custom fields: {res.text}")
             return None
 
         for field in res.json():
             if field["name"].strip().lower() == field_name.lower():
+                self.custom_fields[field_name] = field["id"]
                 return field["id"]
 
-        log_error(f"Custom field '{field_name}' not found!")
+        log_error(f"⚠ Custom field missing: {field_name}")
         return None
 
-    def _get_lead_id_field(self):
-        if not self.lead_field_id:
-            self.lead_field_id = self._get_custom_field_id_by_name("lead_id")
-        return self.lead_field_id
+    def set_custom_field(self, card_id, field_name, value):
+        field_id = self._get_custom_field_id(field_name)
+        if not field_id:
+            return False
 
-    def _get_email_field(self):
-        if not self.email_field_id:
-            self.email_field_id = self._get_custom_field_id_by_name("email")
-        return self.email_field_id
+        url = f"{self.BASE_URL}/card/{card_id}/customField/{field_id}/item"
+        body = {"value": {"text": value}}
+        res = requests.put(url, params=self.auth, json=body)
+
+        if res.status_code != 200:
+            log_error(f"❌ Failed set field {field_name}: {res.text}")
+            return False
+
+        return True
 
     # ------------------------------------------------
     # Create / Update Cards
@@ -72,133 +75,117 @@ class TrelloClient:
         list_id = self.STATUS_TO_LIST.get(status, TODO_LIST_ID)
 
         url = f"{self.BASE_URL}/cards"
-        params = {
-            **self.auth_params,
-            "name": name,   # Only name in card title
-            "idList": list_id,
-        }
-
+        params = {**self.auth, "name": name, "idList": list_id}
         res = requests.post(url, params=params)
-        if res.status_code == 200:
-            card = res.json()
 
-            # Set custom fields
-            self.set_lead_id(card["id"], lead_id)
-            self.set_email(card["id"], email)
+        if res.status_code != 200:
+            log_error(f"❌ Create card failed: {res.text}")
+            return False
 
-            self.mapping_store.upsert(
+        card = res.json()
+
+        # Attach metadata
+        self.set_custom_field(card["id"], "lead_id", lead_id)
+        if email:
+            self.set_custom_field(card["id"], "email", email)
+
+        self.store.upsert(
             lead_id,
             trello_card_id=card["id"],
             trello_status=status,
-            trello_timestamp=card["dateLastActivity"]
-            )
-            log_info(f"Created card for lead {lead_id} in {status}")
-            return card
+            trello_timestamp=card["dateLastActivity"],
+        )
 
-        log_error(f"Failed to create card: {res.text}")
-        return None
+        log_info(f"🆕 Card Created for {lead_id} → {status}")
+        return card
 
-    def sync_card_for_lead(self, name, lead_id, status="TODO", email=""):
-        mapping = self.mapping_store.get(lead_id)
+    def sync_card_for_lead(self, name, lead_id, status, email=""):
+        mapping = self.store.get(lead_id)
+
         if mapping and mapping.get("trello_card_id"):
-            card_id = mapping["trello_card_id"]
-            self.update_status(card_id, status, lead_id)
-            return
-
+            return self.update_status(mapping["trello_card_id"], status, lead_id)
 
         return self.create_card(name, lead_id, status, email)
 
     def update_status(self, card_id, status, lead_id):
         list_id = self.STATUS_TO_LIST.get(status)
         url = f"{self.BASE_URL}/cards/{card_id}"
-        params = {**self.auth_params, "idList": list_id}
+        params = {**self.auth, "idList": list_id}
         res = requests.put(url, params=params)
 
-        if res.status_code == 200:
-            card = res.json()
-            self.mapping_store.upsert(
-                lead_id,
-                trello_status=status,
-                trello_timestamp=card["dateLastActivity"],
-            )
-
-    # ------------------------------------------------
-    # Custom Field Setting
-    # ------------------------------------------------
-    def set_lead_id(self, card_id, lead_id):
-        field_id = self._get_lead_id_field()
-        if not field_id:
-            return
-
-        url = f"{self.BASE_URL}/card/{card_id}/customField/{field_id}/item"
-        body = {"value": {"text": lead_id}}
-        requests.put(url, params=self.auth_params, json=body)
-
-    def set_email(self, card_id, email):
-        if not email:
-            return
-
-        field_id = self._get_email_field()
-        if not field_id:
-            return
-
-        url = f"{self.BASE_URL}/card/{card_id}/customField/{field_id}/item"
-        body = {"value": {"text": email}}
-        requests.put(url, params=self.auth_params, json=body)
-
-    # ------------------------------------------------
-    # Read Cards for Reverse Sync
-    # ------------------------------------------------
-    def find_card_by_lead_id(self, lead_id):
-        if not self._get_lead_id_field():
-            return None
-
-        url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/cards"
-        res = requests.get(url, params=self.auth_params)
         if res.status_code != 200:
-            return None
+            log_error(f"❌ Move card failed: {res.text}")
+            return False
 
-        for card in res.json():
-            if self.get_lead_id_value(card["id"]) == lead_id:
-                return card
-        return None
+        card = res.json()
 
-    def get_lead_id_value(self, card_id):
-        field_id = self._get_lead_id_field()
+        self.store.upsert(
+            lead_id,
+            trello_status=status,
+            trello_timestamp=card["dateLastActivity"],
+        )
+
+        log_info(f"♻ Status Updated: {lead_id} → {status}")
+        return card
+
+    # ------------------------------------------------
+    # Archive Support
+    # ------------------------------------------------
+    def archive_card(self, card_id):
+        url = f"{self.BASE_URL}/cards/{card_id}"
+        params = {**self.auth, "closed": "true"}
+
+        res = requests.put(url, params=params)
+        if res.status_code != 200:
+            log_error(f"❌ Archive failed: {res.text}")
+            return False
+
+        log_info(f"🗑 Archived card {card_id}")
+        return True
+
+    # ------------------------------------------------
+    # Read / Reverse Sync Helpers
+    # ------------------------------------------------
+    def _get_field_value(self, card_id, field_name):
+        field_id = self._get_custom_field_id(field_name)
         if not field_id:
             return None
 
         url = f"{self.BASE_URL}/cards/{card_id}/customFieldItems"
-        res = requests.get(url, params=self.auth_params)
+        res = requests.get(url, params=self.auth)
+
         if res.status_code != 200:
             return None
 
         for item in res.json():
             if item["idCustomField"] == field_id:
                 return item["value"]["text"]
+
         return None
 
     def get_cards_with_lead_and_status(self):
-        if not self._get_lead_id_field():
-            return []
-
         url = f"{self.BASE_URL}/boards/{TRELLO_BOARD_ID}/cards"
-        res = requests.get(url, params=self.auth_params)
+        res = requests.get(url, params=self.auth)
+
         if res.status_code != 200:
-            log_error(f"Card fetch failed: {res.text}")
+            log_error(f"❌ Failed fetch cards: {res.text}")
             return []
 
         cards = []
         for card in res.json():
-            lead_id = self.get_lead_id_value(card["id"])
+            lead_id = self._get_field_value(card["id"], "lead_id")
             if not lead_id:
                 continue
 
-            status = self.LIST_TO_STATUS.get(card.get("idList"))
+            status = self.LIST_TO_STATUS.get(card["idList"])
             if not status:
                 continue
 
-            cards.append({"lead_id": lead_id, "status": status})
+            cards.append({
+                "lead_id": lead_id,
+                "status": status,
+                "trello_timestamp": card.get("dateLastActivity")
+            })
 
-        log_info(f"Reverse sync: Found {len(cards)} linked cards")
+        log_info(f"🔍 Reverse Sync Found {len(cards)} mapped Trello cards")
         return cards
