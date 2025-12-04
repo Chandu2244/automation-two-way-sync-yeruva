@@ -198,6 +198,8 @@ class TrelloClient:
         log_info(f"🔍 Reverse Sync Found {len(cards)} mapped Trello cards")
         return cards
     
+    def get_lead_id_value(self, card_id):
+        return self._get_field_value(card_id, "lead_id")
     
     def restore_archived_card_if_exists(self, lead_id, new_status):
         field_id = self._get_custom_field_id("lead_id")

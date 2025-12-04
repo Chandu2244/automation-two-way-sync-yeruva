@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "mapping.db")
 
@@ -57,32 +58,59 @@ class MappingStore:
         row = self.get(lead_id)
         return row["trello_card_id"] if row else None
 
+    def get_all_lead_ids(self):
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT lead_id FROM mapping")
+        result = [r[0] for r in cursor.fetchall()]
+        conn.close()
+        return result
+
     # --------------------------------------
     # UPSERT
     # --------------------------------------
-    def upsert(self, lead_id, trello_card_id=None, trello_status=None,
+    def upsert(self, lead_id,
+               trello_card_id=None, trello_status=None,
                trello_timestamp=None, sheet_status=None, sheet_timestamp=None):
 
         existing = self.get(lead_id) or {}
-        trello_card_id = trello_card_id or existing.get("trello_card_id")
-        trello_status = trello_status or existing.get("trello_status")
-        trello_timestamp = trello_timestamp or existing.get("trello_timestamp")
-        sheet_status = sheet_status or existing.get("sheet_status")
-        sheet_timestamp = sheet_timestamp or existing.get("sheet_timestamp")
+
+        final_values = (
+            lead_id,
+            trello_card_id or existing.get("trello_card_id"),
+            trello_status or existing.get("trello_status"),
+            trello_timestamp or existing.get("trello_timestamp"),
+            sheet_status or existing.get("sheet_status"),
+            sheet_timestamp or existing.get("sheet_timestamp"),
+        )
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO mapping 
-            (lead_id, trello_card_id, trello_status, trello_timestamp, sheet_status, sheet_timestamp)
+            INSERT OR REPLACE INTO mapping
+            (lead_id, trello_card_id, trello_status, trello_timestamp,
+             sheet_status, sheet_timestamp)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (lead_id, trello_card_id, trello_status,
-              trello_timestamp, sheet_status, sheet_timestamp))
+        """, final_values)
         conn.commit()
         conn.close()
 
     # --------------------------------------
-    # DELETE
+    # Update timestamp from Trello webhook event
+    # --------------------------------------
+    def update_timestamp_from_trello(self, lead_id):
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE mapping
+            SET trello_timestamp = ?
+            WHERE lead_id = ?
+        """, (datetime.utcnow().isoformat(), lead_id))
+        conn.commit()
+        conn.close()
+
+    # --------------------------------------
+    # DELETE record → Called only after archive
     # --------------------------------------
     def delete(self, lead_id):
         conn = sqlite3.connect(DB_PATH)
@@ -90,11 +118,3 @@ class MappingStore:
         cursor.execute("DELETE FROM mapping WHERE lead_id=?", (lead_id,))
         conn.commit()
         conn.close()
-
-    def get_all_lead_ids(self):
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT lead_id FROM mapping")
-        ids = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        return ids
