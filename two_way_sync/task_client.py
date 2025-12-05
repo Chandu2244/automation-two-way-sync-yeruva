@@ -101,12 +101,20 @@ class TrelloClient:
 
     def sync_card_for_lead(self, name, lead_id, status, email=""):
         mapping = self.store.get(lead_id)
+        card_id = mapping.get("trello_card_id") if mapping else None
 
-        # If exists in mapping → just update
-        if mapping and mapping.get("trello_card_id"):
-            return self.update_status(mapping["trello_card_id"], status, lead_id)
-
-        # If not mapped → restore from archive if available
+        if card_id:
+            # Try restoring archived card first
+            restored = self.restore_archived_card_if_exists(lead_id, status)
+            if restored:
+                return restored
+            
+            # If not archived → update existing card
+            updated = self.update_status(card_id, status, lead_id)
+            if updated:
+                return updated
+        
+        # Step 2: No valid active card → try restoring by metadata
         restored = self.restore_archived_card_if_exists(lead_id, status)
         if restored:
             return restored
@@ -192,12 +200,20 @@ class TrelloClient:
             cards.append({
                 "lead_id": lead_id,
                 "status": status,
-                "trello_timestamp": card.get("dateLastActivity")
+                "trello_timestamp": card.get("dateLastActivity"),
+                "archived":card.get("closed",False)
             })
 
         log_info(f"🔍 Reverse Sync Found {len(cards)} mapped Trello cards")
         return cards
     
+    def get_card_details(self, card_id):
+        url = f"{self.BASE_URL}/cards/{card_id}"
+        res = requests.get(url, params=self.auth)
+        if res.status_code == 200:
+            return res.json()
+        return {}
+        
     def get_lead_id_value(self, card_id):
         return self._get_field_value(card_id, "lead_id")
     

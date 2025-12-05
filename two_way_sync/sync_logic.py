@@ -132,6 +132,16 @@ def sync_trello_to_leads(lead_client, trello_client, store):
         new_status = STATUS_FROM_TRELLO.get(card["status"])
         trello_ts = card.get("updated_at") or datetime.utcnow().isoformat()
 
+        if card.get("archived"):
+            lead_client.update_lead_status(lead_id, "LOST")
+            store.upsert(
+                lead_id,
+                sheet_status="LOST",
+                sheet_timestamp=trello_ts
+            )
+            log_info(f"🗑 Lead archived in Trello → Marked LOST in Sheets: {lead_id}")
+            continue
+
         existing = store.get(lead_id)
 
         if not existing:

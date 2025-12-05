@@ -56,56 +56,64 @@ async def sync_from_sheets(request: Request):
 async def trello_webhook_handler(request: Request):
     body = await request.json()
     action = body.get("action", {})
-    action_type = action.get("type", "")
+    action_type = action.get("type")
 
-    log_info(f"🔔 Trello Event: {action_type}")
+    log_info(f"🔔 Trello Webhook Event: {action_type}")
 
     data = action.get("data", {})
-    list_before = data.get("listBefore", {})
-    list_after = data.get("listAfter", {})
+    card_data = data.get("card", {})
+    card_id = card_data.get("id")
 
-    # 🚫 Ignore if not a list movement event
-    if not list_after:
-        return {"ignored": True}
-
-    old_list_id = list_before.get("id")
-    new_list_id = list_after.get("id")
-
-    # 🚫 Ignore reorder inside same list & duplicate first event (only process entry)
-    if not new_list_id or old_list_id == new_list_id:
-        return {"ignored": True}
+    # No card? Ignore
+    if not card_id:
+        return {"ignored": "no_card"}
 
     from two_way_sync.task_client import TrelloClient
     trello_client = TrelloClient()
-
-    card_id = data.get("card", {}).get("id")
     lead_id = trello_client.get_lead_id_value(card_id)
 
-    # 🚫 Not a card we track
+    # Not synced with sheets → ignore
     if not lead_id:
-        return {"ignored": True}
-
-    new_list_name = list_after.get("name", "").upper()
-
-    from two_way_sync.sync_logic import STATUS_FROM_TRELLO
-    new_status = STATUS_FROM_TRELLO.get(new_list_name)
-
-    # 🚫 List not mapped to status — ignore silently
-    if not new_status:
-        return {"ignored": True}
+        return {"ignored": "not_synced_card"}
 
     from two_way_sync.lead_client import LeadClient
     lead_client = LeadClient()
-    lead_client.update_lead_status(lead_id, new_status)
-
     from two_way_sync.db.mapping_store import MappingStore
     store = MappingStore()
-    store.update_timestamp_from_trello(lead_id)
 
-    log_info(f"📌 Reverse Sync Applied: {lead_id} → {new_status}")
+    # 🟥 CASE: Archived Card → LOST in Google Sheets
+    if card_data.get("closed", False):
+        lead_client.update_lead_status(lead_id, "LOST")
+        store.upsert(lead_id, sheet_status="LOST")
+        log_info(f"🗑 Trello Archived → Sheet LOST updated: {lead_id}")
+        return {"status": "archived_to_lost"}
 
-    return {"ok": True, "reverse_sync": True, "lead_id": lead_id}
+     # 🟩 CASE 2: Card Restored → Status from current Trello list
+    card_details = trello_client.get_card_details(card_id)
+    list_id = card_details.get("idList")
 
+    from two_way_sync.sync_logic import STATUS_FROM_TRELLO
+    new_status = STATUS_FROM_TRELLO.get(
+        trello_client.LIST_TO_STATUS.get(list_id)
+    )
+
+    if new_status:
+        lead_client.update_lead_status(lead_id, new_status)
+        store.update_timestamp_from_trello(lead_id)
+        log_info(f"🔄 Trello Restore → Sheet updated: {lead_id} → {new_status}")
+        return {"status": "restore_to_active"}
+
+    # 🟦 CASE 3: Moved lists → Normal reverse sync
+    new_status = STATUS_FROM_TRELLO.get(
+        data.get("listAfter", {}).get("name", "").upper()
+    )
+    if new_status:
+        lead_client.update_lead_status(lead_id, new_status)
+        store.update_timestamp_from_trello(lead_id)
+        log_info(f"📌 Trello list change → Sheet updated: {lead_id} → {new_status}")
+        return {"status": "list_move_updated"}
+
+    return {"ignored": True}
 
 @app.get("/")
 async def root():
