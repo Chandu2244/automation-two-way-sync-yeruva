@@ -6,4 +6,3 @@ requests
 fastapi
 uvicorn
 sqlite-utils
-starlette
