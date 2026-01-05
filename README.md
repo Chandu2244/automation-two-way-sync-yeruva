@@ -160,7 +160,7 @@ Update this URL in:
 
 ## 📝 Demo Video
 
-🔗 [Click here to watch the Demo Video](https://drive.google.com/file/d/16vkLa5h02SaY_AuSU47a666lAWXavQ2R/view?usp=sharing)
+[![Demo Video](https://img.youtube.com/vi/YQefAxYvM_M/0.jpg)](https://youtu.be/YQefAxYvM_M)
 
 ---
 
@@ -169,6 +169,7 @@ Update this URL in:
 **Yeruva**
 Backend Developer — API Integrations & Automation
 📍 Hyderabad, India
+
 
 
 
