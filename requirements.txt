@@ -1,8 +1,8 @@
+fastapi
 google-api-python-client
 google-auth
 google-auth-oauthlib
+gspread
 python-dotenv
 requests
-fastapi
 uvicorn
-sqlite-utils

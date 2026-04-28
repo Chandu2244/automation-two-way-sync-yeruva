@@ -6,7 +6,9 @@ logging.basicConfig(
 )
 
 def log_info(message):
+    """Write an operational info log message."""
     logging.info(message)
 
 def log_error(message):
+    """Write an operational error log message."""
     logging.error(message)

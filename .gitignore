@@ -1,6 +1,39 @@
+# Environment and secrets
 .env
+.env.*
+!.env.example
+credentials.json
 *.json
-*.sqlite
-__pycache__/
-*.pyc
+
+# Virtual environments
+.venv/
 venv/
+env/
+
+# Python cache and build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local SQLite runtime files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Logs and local OS/editor noise
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scripts/output artifacts
+saved_screenshots/

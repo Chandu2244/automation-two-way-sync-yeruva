@@ -1,16 +1,21 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+"""FastAPI entrypoint for the Google Sheets <-> Trello sync service."""
+
 from datetime import datetime
-from two_way_sync.sync_logic import run_partial_sync
+
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from two_way_sync.config import SHEETS_SHARED_SECRET, validate_config
 from two_way_sync.db.mapping_store import MappingStore
+from two_way_sync.scheduler import SyncScheduler
+from two_way_sync.sync_logic import STATUS_FROM_TRELLO, SyncService
 from two_way_sync.task_client import TrelloClient
-from two_way_sync.lead_client import LeadClient
-from two_way_sync.sync_logic import STATUS_FROM_TRELLO
-from two_way_sync.utils.logger import log_info, log_error
+from two_way_sync.utils.logger import log_error, log_info
 
 app = FastAPI()
+scheduler = SyncScheduler()
 
-# Allow requests from Apps Script & Trello Webhook
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,100 +24,164 @@ app.add_middleware(
 )
 
 
-store = MappingStore()
+class SheetSyncPayload(BaseModel):
+    lead_id: str = Field(..., min_length=1)
+    status: str = Field(..., min_length=1)
+    name: str = ""
+    email: str = ""
+    sheet_timestamp: str | None = None
+    last_updated_time: str | None = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Validate config and start background catch-up/safety jobs."""
+    validate_config()
+    scheduler.start()
+    log_info("Configuration validated successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await scheduler.stop()
 
 
 @app.get("/health")
 async def health_check():
+    """Lightweight liveness endpoint."""
     return {"status": "UP"}
 
 
-# 🟢 Sheets → Trello (Status edit trigger)
 @app.post("/sync")
-async def sync_from_sheets(request: Request):
-    data = await request.json()
-    log_info(f"📩 Sheet Trigger: {data}")
+async def sync_from_sheets(
+    payload: SheetSyncPayload,
+    x_sync_secret: str | None = Header(default=None),
+):
+    """Event-driven Sheets -> Trello sync trigger."""
+    if SHEETS_SHARED_SECRET and x_sync_secret != SHEETS_SHARED_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid sync secret")
 
-    lead_id = data["lead_id"]
-    name = data.get("name", "").strip()
-    email = data.get("email", "").strip()
-    status = data["status"].upper()
+    lead_id = payload.lead_id.strip()
+    status = payload.status.upper().strip()
+    incoming_time = (
+        payload.last_updated_time
+        or payload.sheet_timestamp
+        or datetime.utcnow().isoformat()
+    )
 
-    timestamp = data.get("sheet_timestamp") or datetime.utcnow().isoformat()
+    log_info(f"Sheet event received lead_id={lead_id} incoming_time={incoming_time}")
 
-    exists = store.exists(lead_id)
+    if not lead_id or not status:
+        raise HTTPException(status_code=422, detail="lead_id and status are required")
 
-    run_partial_sync(lead_id, name, email, status, timestamp)
+    try:
+        result = SyncService().apply_sheets_event(
+            lead_id,
+            payload.name.strip(),
+            payload.email.strip(),
+            status,
+            incoming_time,
+        )
+    except Exception as exc:
+        log_error(f"Sheets event failed lead_id={lead_id}: {exc}")
+        raise HTTPException(status_code=500, detail="Sync processing failed")
 
-    return {
-        "source": "sheets",
-        "lead_id": lead_id,
-        "action": "update" if exists else "create"
-    }
+    return {"source": "sheets", "lead_id": lead_id, **result}
 
 
-# 🔄 Trello → Sheets (Webhook, Only for Status change)
 @app.post("/trello-webhook")
+@app.post("/trello-webhook/")
 async def trello_webhook_handler(request: Request):
-    body = await request.json()
-    action = body.get("action", {})
-    action_type = action.get("type")
+    """Event-driven Trello -> Sheets sync trigger."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    log_info(f"🔔 Trello Webhook Event: {action_type}")
-
-    data = action.get("data", {})
-    card_data = data.get("card", {})
-    card_id = card_data.get("id")
-
-    # No card? Ignore
-    if not card_id:
-        return {"ignored": "no_card"}
-
+    store = MappingStore()
     trello_client = TrelloClient()
-    lead_id = trello_client.get_lead_id_value(card_id)
+    event_id = None
 
-    # Not synced with sheets → ignore
-    if not lead_id:
-        return {"ignored": "not_synced_card"}
+    try:
+        action = body.get("action", {})
+        event_id = action.get("id")
+        action_type = action.get("type")
+        data = action.get("data", {})
+        card_data = data.get("card", {})
+        card_id = card_data.get("id")
 
-    lead_client = LeadClient()
+        log_info(f"Trello webhook received event_id={event_id} type={action_type}")
 
-    # 🟥 CASE: Archived Card → LOST in Google Sheets
+        if event_id and not store.try_claim_event(event_id):
+            return {"ignored": "duplicate_event"}
+        if not card_id:
+            store.mark_event_processed(event_id)
+            return {"ignored": "no_card"}
+
+        lead_id = trello_client.get_lead_id_value(card_id)
+        if not lead_id:
+            store.mark_event_processed(event_id)
+            return {"ignored": "not_synced_card"}
+
+        incoming_time = action.get("date") or datetime.utcnow().isoformat()
+        status = _status_from_trello_webhook(data, card_data, trello_client, card_id)
+        if not status:
+            store.mark_event_processed(event_id)
+            return {"ignored": "no_status_change"}
+
+        result = SyncService(store=store, trello_client=trello_client).apply_trello_event(
+            lead_id,
+            status,
+            incoming_time,
+            card_id,
+        )
+        store.mark_event_processed(event_id)
+        return {"source": "trello", "lead_id": lead_id, "status": status, **result}
+    except Exception as exc:
+        store.release_event_claim(event_id)
+        log_error(f"Trello webhook handling failed: {exc}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+def _status_from_trello_webhook(data, card_data, trello_client, card_id):
     if card_data.get("closed", False):
-        lead_client.update_lead_status(lead_id, "LOST")
-        store.upsert(lead_id, sheet_status="LOST")
-        log_info(f"🗑 Trello Archived → Sheet LOST updated: {lead_id}")
-        return {"status": "archived_to_lost"}
+        return "LOST"
 
-     # 🟩 CASE 2: Card Restored → Status from current Trello list
+    list_after_name = data.get("listAfter", {}).get("name", "").upper()
+    if list_after_name:
+        return STATUS_FROM_TRELLO.get(list_after_name)
+
     card_details = trello_client.get_card_details(card_id)
     list_id = card_details.get("idList")
+    trello_status = trello_client.LIST_TO_STATUS.get(list_id)
+    return STATUS_FROM_TRELLO.get(trello_status)
 
-    new_status = STATUS_FROM_TRELLO.get(
-        trello_client.LIST_TO_STATUS.get(list_id)
-    )
 
-    if new_status:
-        lead_client.update_lead_status(lead_id, new_status)
-        store.update_timestamp_from_trello(lead_id)
-        log_info(f"🔄 Trello → Sheet updated: {lead_id} → {new_status}")
-        return {"status": "restore_to_active"}
+@app.get("/trello-webhook")
+@app.get("/trello-webhook/")
+async def validate_trello_webhook():
+    """Trello webhook validation endpoint."""
+    return Response(content="OK", status_code=200)
 
-    # 🟦 CASE 3: Moved lists → Normal reverse sync
-    new_status = STATUS_FROM_TRELLO.get(
-        data.get("listAfter", {}).get("name", "").upper()
-    )
-    if new_status:
-        lead_client.update_lead_status(lead_id, new_status)
-        store.update_timestamp_from_trello(lead_id)
-        log_info(f"📌 Trello list change → Sheet updated: {lead_id} → {new_status}")
-        return {"status": "list_move_updated"}
 
-    return {"ignored": True}
+@app.head("/trello-webhook")
+@app.head("/trello-webhook/")
+async def trello_webhook_head():
+    """Trello webhook HEAD validation endpoint."""
+    return Response(status_code=200)
+
 
 @app.get("/")
 async def root():
+    """Service info endpoint."""
     return {
-        "message": "Two-Way Sync Service Running 🚀",
-        "routes": ["/health", "/sync", "/trello-webhook", "/docs"]
+        "message": "Two-Way Sync Service Running",
+        "routes": ["/health", "/sync", "/trello-webhook", "/docs"],
+        "sync_layers": [
+            "event_driven",
+            "idempotency",
+            "incremental",
+            "retry_queue",
+            "scheduled_reconciliation",
+        ],
     }

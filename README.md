@@ -87,6 +87,30 @@ Built to handle **edge cases** like a real production system.
 
 ---
 
+## 📁 Project Structure
+
+```text
+.
+├── app.py                         # FastAPI entrypoint
+├── two_way_sync/                  # Core sync package
+│   ├── config.py                  # Environment configuration
+│   ├── lead_client.py             # Google Sheets client
+│   ├── task_client.py             # Trello API client
+│   ├── sync_logic.py              # Sync orchestration logic
+│   ├── db/
+│   │   ├── mapping_store.py       # SQLite mapping operations
+│   │   └── mapping.db             # Local mapping database
+│   └── utils/logger.py            # Logging helpers
+└── scripts/manual/                # Manual utilities for local checks
+    ├── register_trello_webhook.py
+    ├── test_bot_identity_manual.py
+    ├── test_connections_manual.py
+    ├── test_sheets_manual.py
+    └── test_trello_create_card_manual.py
+```
+
+---
+
 ## 🌐 Deployment: Ngrok
 
 Since Trello needs a **public URL** for webhook events,
@@ -115,6 +139,20 @@ Update this URL in:
 ✔ Perfect secure testing environment
 ✔ No server cost
 ✔ Works in interviews to demo real sync behavior live 🔥
+
+---
+
+## 🧪 Manual Utility Scripts
+
+Run these only when needed during setup or troubleshooting:
+
+```bash
+python scripts/manual/register_trello_webhook.py
+python scripts/manual/test_connections_manual.py
+python scripts/manual/test_sheets_manual.py
+python scripts/manual/test_trello_create_card_manual.py
+python scripts/manual/test_bot_identity_manual.py
+```
 
 ---
 
