@@ -71,7 +71,6 @@ class MappingStore:
                     lead_id TEXT NOT NULL,
                     target_source TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    expected_timestamp TEXT,
                     created_at TEXT NOT NULL
                 )
             """)
@@ -79,7 +78,6 @@ class MappingStore:
             self._ensure_column(cursor, "mapping", "last_updated_time", "TEXT")
             self._ensure_column(cursor, "mapping", "last_updated_source", "TEXT")
             self._ensure_column(cursor, "processed_events", "status", "TEXT DEFAULT 'processing'")
-            self._ensure_column(cursor, "pending_echoes", "expected_timestamp", "TEXT")
             conn.commit()
 
     def _ensure_column(self, cursor, table_name, column_name, column_type):
@@ -352,31 +350,22 @@ class MappingStore:
             cursor.execute("DELETE FROM retry_queue WHERE id = ?", (retry_id,))
             conn.commit()
 
-    def record_pending_echo(self, lead_id, target_source, status, expected_timestamp=None):
+    def record_pending_echo(self, lead_id, target_source, status):
         """Record an expected webhook/event caused by our own outbound write."""
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO pending_echoes
-                (lead_id, target_source, status, expected_timestamp, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO pending_echoes (lead_id, target_source, status, created_at)
+                VALUES (?, ?, ?, ?)
             """, (
                 lead_id,
                 target_source,
                 (status or "").upper().strip(),
-                expected_timestamp,
                 datetime.utcnow().isoformat(),
             ))
             conn.commit()
 
-    def consume_pending_echo(
-        self,
-        lead_id,
-        target_source,
-        status,
-        incoming_timestamp=None,
-        ttl_seconds=600,
-    ):
+    def consume_pending_echo(self, lead_id, target_source, status, ttl_seconds=600):
         """Return True and delete a recent expected echo event."""
         cutoff = (
             datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -388,58 +377,17 @@ class MappingStore:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM pending_echoes WHERE created_at < ?", (cutoff,))
             cursor.execute("""
-                SELECT id, expected_timestamp FROM pending_echoes
+                SELECT id FROM pending_echoes
                 WHERE lead_id = ?
                   AND target_source = ?
                   AND status = ?
                 ORDER BY created_at ASC
+                LIMIT 1
             """, (lead_id, target_source, status))
-            rows = cursor.fetchall()
-            if not rows:
+            row = cursor.fetchone()
+            if not row:
                 conn.commit()
                 return False
-
-            if target_source != "sheets":
-                cursor.execute("DELETE FROM pending_echoes WHERE id = ?", (rows[0][0],))
-                conn.commit()
-                return True
-
-            legacy_echo_ids = []
-            for echo_id, expected_timestamp in rows:
-                if not expected_timestamp:
-                    legacy_echo_ids.append(echo_id)
-                    continue
-                if self._timestamps_match(incoming_timestamp, expected_timestamp):
-                    if legacy_echo_ids:
-                        cursor.executemany(
-                            "DELETE FROM pending_echoes WHERE id = ?",
-                            [(item_id,) for item_id in legacy_echo_ids],
-                        )
-                    cursor.execute("DELETE FROM pending_echoes WHERE id = ?", (echo_id,))
-                    conn.commit()
-                    return True
-
-            if legacy_echo_ids:
-                cursor.executemany(
-                    "DELETE FROM pending_echoes WHERE id = ?",
-                    [(item_id,) for item_id in legacy_echo_ids],
-                )
+            cursor.execute("DELETE FROM pending_echoes WHERE id = ?", (row[0],))
             conn.commit()
-            return False
-
-    def _timestamps_match(self, first, second, tolerance_seconds=2):
-        """Return True when two webhook timestamps refer to the same write."""
-        first_dt = self._parse_timestamp(first)
-        second_dt = self._parse_timestamp(second)
-        if first_dt and second_dt:
-            return abs((first_dt - second_dt).total_seconds()) <= tolerance_seconds
-        return (first or "").strip() == (second or "").strip()
-
-    def _parse_timestamp(self, value):
-        if not value or not isinstance(value, str):
-            return None
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return True

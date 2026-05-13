@@ -69,12 +69,7 @@ def should_skip_event(store, lead_id, incoming_time, incoming_source, incoming_s
     """Decide whether an incoming event is stale, duplicate, or an expected echo."""
     incoming_status = (incoming_status or "").upper().strip()
 
-    if store.consume_pending_echo(
-        lead_id,
-        incoming_source,
-        incoming_status,
-        incoming_timestamp=incoming_time,
-    ):
+    if store.consume_pending_echo(lead_id, incoming_source, incoming_status):
         log_info(
             "SKIP: self-trigger "
             f"lead_id={lead_id} incoming_time={incoming_time} "
@@ -192,12 +187,7 @@ class SyncService:
             )
             return {"applied": False, "reason": "queued_retry"}
 
-        self.store.record_pending_echo(
-            lead_id,
-            SOURCE_SHEETS,
-            status,
-            expected_timestamp=incoming_time,
-        )
+        self.store.record_pending_echo(lead_id, SOURCE_SHEETS, status)
         self.store.upsert(
             lead_id,
             trello_card_id=card_id,
@@ -234,12 +224,7 @@ class SyncService:
             last_updated_time=incoming_time,
             last_updated_source=SOURCE_SHEETS,
         )
-        self.store.record_pending_echo(
-            lead_id,
-            SOURCE_TRELLO,
-            sheet_status,
-            expected_timestamp=incoming_time,
-        )
+        self.store.record_pending_echo(lead_id, SOURCE_TRELLO, sheet_status)
 
     def _archive_trello_card(self, lead_id, incoming_time):
         """Archive the mapped Trello card when a Sheets lead is marked LOST."""
@@ -256,12 +241,7 @@ class SyncService:
             last_updated_time=incoming_time,
             last_updated_source=SOURCE_SHEETS,
         )
-        self.store.record_pending_echo(
-            lead_id,
-            SOURCE_TRELLO,
-            "LOST",
-            expected_timestamp=incoming_time,
-        )
+        self.store.record_pending_echo(lead_id, SOURCE_TRELLO, "LOST")
 
     def queue_retry(self, operation, payload, error):
         """Persist a failed operation so the scheduler can retry it later."""
@@ -325,12 +305,7 @@ class SyncService:
             )
             if not updated:
                 raise RuntimeError("Sheets status update failed")
-            self.store.record_pending_echo(
-                payload["lead_id"],
-                SOURCE_SHEETS,
-                payload["status"],
-                expected_timestamp=payload["incoming_time"],
-            )
+            self.store.record_pending_echo(payload["lead_id"], SOURCE_SHEETS, payload["status"])
             self.store.upsert(
                 payload["lead_id"],
                 trello_card_id=payload.get("card_id"),
