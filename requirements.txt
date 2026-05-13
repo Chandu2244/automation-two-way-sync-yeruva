@@ -4,5 +4,6 @@ google-auth
 google-auth-oauthlib
 gspread
 python-dotenv
+psycopg[binary]
 requests
 uvicorn
