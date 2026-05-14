@@ -214,6 +214,66 @@ class SyncService:
         )
         return {"applied": True}
 
+    def create_lead_from_ai_fields(self, name, email, status, incoming_time=None):
+        """Create a lead in Sheets first, then create the matching Trello card."""
+        incoming_time = incoming_time or utc_now_iso()
+        name = (name or "").strip()
+        email = (email or "").strip()
+        status = (status or "").upper().strip()
+        lead_id = self.store.get_next_lead_id()
+
+        created = self.lead_client.append_lead(
+            lead_id,
+            name,
+            email,
+            status,
+            incoming_time,
+            SOURCE_SHEETS,
+        )
+        if not created:
+            raise RuntimeError("Google Sheets row creation failed")
+
+        self.store.upsert(
+            lead_id,
+            sheet_status=status,
+            sheet_timestamp=incoming_time,
+            last_update_source=SOURCE_SHEETS,
+            last_updated_time=incoming_time,
+            last_updated_source=SOURCE_SHEETS,
+        )
+
+        try:
+            self._upsert_trello_card(lead_id, name, email, status, incoming_time)
+        except Exception as exc:
+            self.queue_retry(
+                "sheets_to_trello",
+                {
+                    "lead_id": lead_id,
+                    "name": name,
+                    "email": email,
+                    "status": status,
+                    "incoming_time": incoming_time,
+                },
+                exc,
+            )
+            return {
+                "created": True,
+                "lead_id": lead_id,
+                "trello_created": False,
+                "reason": "queued_retry",
+            }
+
+        log_info(
+            "CREATE: AI->Sheets->Trello "
+            f"lead_id={lead_id} incoming_time={incoming_time}"
+        )
+        return {
+            "created": True,
+            "lead_id": lead_id,
+            "trello_created": True,
+            "status": status,
+        }
+
     def _upsert_trello_card(self, lead_id, name, email, sheet_status, incoming_time):
         """Create, restore, or move the Trello card for a Sheets-origin update."""
         trello_status = STATUS_TO_TRELLO.get(sheet_status, "TODO")

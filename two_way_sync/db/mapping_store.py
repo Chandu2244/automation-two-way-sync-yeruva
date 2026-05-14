@@ -135,6 +135,23 @@ class MappingStore:
                 cursor.execute("SELECT lead_id FROM mapping")
                 return [row[0] for row in cursor.fetchall()]
 
+    def get_next_lead_id(self, prefix="L"):
+        """Return the next lead ID based on the highest mapped ID in the database."""
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT lead_id
+                    FROM mapping
+                    WHERE lead_id ~ %s
+                    ORDER BY substring(lead_id from %s)::integer DESC
+                    LIMIT 1
+                """, (f"^{prefix}[0-9]+$", len(prefix) + 1))
+                row = cursor.fetchone()
+
+        if not row:
+            return f"{prefix}1"
+        return f"{prefix}{int(row[0][len(prefix):]) + 1}"
+
     def upsert(
         self,
         lead_id,

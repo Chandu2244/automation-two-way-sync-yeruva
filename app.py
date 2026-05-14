@@ -6,6 +6,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from two_way_sync.ai_lead_parser import GeminiLeadParser, LeadValidationError
 from two_way_sync.config import SHEETS_SHARED_SECRET, validate_config
 from two_way_sync.db.mapping_store import MappingStore
 from two_way_sync.scheduler import SyncScheduler
@@ -31,6 +32,10 @@ class SheetSyncPayload(BaseModel):
     email: str = ""
     sheet_timestamp: str | None = None
     last_updated_time: str | None = None
+
+
+class AiLeadCreatePayload(BaseModel):
+    sentence: str = Field(..., min_length=1)
 
 
 @app.on_event("startup")
@@ -87,6 +92,39 @@ async def sync_from_sheets(
         raise HTTPException(status_code=500, detail="Sync processing failed")
 
     return {"source": "sheets", "lead_id": lead_id, **result}
+
+
+@app.post("/ai-create-lead")
+async def create_lead_with_ai(
+    payload: AiLeadCreatePayload,
+    x_sync_secret: str | None = Header(default=None),
+):
+    """Create a new lead from natural language using Gemini."""
+    if SHEETS_SHARED_SECRET and x_sync_secret != SHEETS_SHARED_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid sync secret")
+
+    try:
+        lead_fields = GeminiLeadParser().parse(payload.sentence)
+        result = SyncService().create_lead_from_ai_fields(
+            lead_fields["name"],
+            lead_fields["email"],
+            lead_fields["status"],
+            datetime.utcnow().isoformat(),
+        )
+    except LeadValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        log_error(f"AI lead creation failed: {exc}")
+        raise HTTPException(status_code=500, detail="AI lead creation failed")
+
+    return {
+        "source": "ai",
+        **result,
+        "lead": {
+            "lead_id": result["lead_id"],
+            **lead_fields,
+        },
+    }
 
 
 @app.post("/trello-webhook")
@@ -176,8 +214,9 @@ async def root():
     """Service info endpoint."""
     return {
         "message": "Two-Way Sync Service Running",
-        "routes": ["/health", "/sync", "/trello-webhook", "/docs"],
+        "routes": ["/health", "/sync", "/ai-create-lead", "/trello-webhook", "/docs"],
         "sync_layers": [
+            "ai_lead_creation",
             "event_driven",
             "idempotency",
             "incremental",

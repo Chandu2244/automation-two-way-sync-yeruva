@@ -78,6 +78,59 @@ class LeadClient:
             log_error(f"Failed updating lead: {str(e)}")
             return False
 
+    def append_lead(self, lead_id, name, email, status, updated_time=None, updated_source="ai"):
+        """Append a new lead row to Google Sheets."""
+        headers = self._with_retry(lambda: self.sheet.row_values(1), "Fetch headers")
+        if not headers:
+            values = [lead_id, name, email, status, updated_time or "", updated_source]
+        else:
+            values = [
+                self._value_for_header(
+                    header,
+                    lead_id,
+                    name,
+                    email,
+                    status,
+                    updated_time,
+                    updated_source,
+                )
+                for header in headers
+            ]
+
+        try:
+            self._with_retry(
+                lambda: self.sheet.append_row(values, value_input_option="USER_ENTERED"),
+                "Append lead row",
+            )
+            log_info(f"Appended lead row lead_id={lead_id} status={status}")
+            return True
+        except Exception as exc:
+            log_error(f"Failed appending lead row lead_id={lead_id}: {exc}")
+            return False
+
+    def _value_for_header(
+        self,
+        header,
+        lead_id,
+        name,
+        email,
+        status,
+        updated_time,
+        updated_source,
+    ):
+        normalized = (header or "").strip().lower().replace(" ", "_")
+        values = {
+            "id": lead_id,
+            "lead_id": lead_id,
+            "name": name,
+            "email": email,
+            "status": status,
+            "last_updated_time": updated_time or "",
+            "updated_at": updated_time or "",
+            "last_updated_source": updated_source,
+        }
+        return values.get(normalized, "")
+
     def _get_column_index(self, column_name):
         """Return 1-based column index by header name."""
         headers = [h.lower() for h in self._with_retry(lambda: self.sheet.row_values(1), "Fetch headers")]

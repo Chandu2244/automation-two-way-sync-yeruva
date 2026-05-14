@@ -162,8 +162,34 @@ python scripts/manual/test_bot_identity_manual.py
 | ---- | ----------------- | --------------------------- |
 | GET  | `/health`         | Service alive check         |
 | POST | `/sync`           | Sheet → Trello partial sync |
+| POST | `/ai-create-lead` | Gemini sentence → new Sheet lead + Trello card |
 | POST | `/trello-webhook` | Trello → Sheet reverse sync |
 | GET  | `/docs`           | Swagger UI                  |
+
+---
+
+### Gemini Lead Creation
+
+Send a sentence from the Google Sheets sidebar to:
+
+```http
+POST /ai-create-lead
+Content-Type: application/json
+X-Sync-Secret: <SHEETS_SHARED_SECRET>
+
+{
+  "sentence": "Create a new contacted lead for Priya Sharma at priya@example.com"
+}
+```
+
+The backend asks Gemini for `name`, `email`, and `status`, validates the JSON, assigns the next lead ID from the mapping database, appends the Google Sheets row, and then creates the Trello card.
+
+Required environment values:
+
+```env
+GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+GEMINI_MODEL="gemini-2.5-flash"
+```
 
 ---
 
