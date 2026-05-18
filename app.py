@@ -99,33 +99,29 @@ async def create_lead_with_ai(
     payload: AiLeadCreatePayload,
     x_sync_secret: str | None = Header(default=None),
 ):
-    """Create a new lead from natural language using Gemini."""
+
     if SHEETS_SHARED_SECRET and x_sync_secret != SHEETS_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="Invalid sync secret")
 
     try:
         lead_fields = GeminiLeadParser().parse(payload.sentence)
-        result = SyncService().create_lead_from_ai_fields(
-            lead_fields["name"],
-            lead_fields["email"],
-            lead_fields["status"],
-            datetime.utcnow().isoformat(),
-        )
+
+        lead_id = MappingStore().get_next_lead_id()
+
     except LeadValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
     except Exception as exc:
         log_error(f"AI lead creation failed: {exc}")
         raise HTTPException(status_code=500, detail="AI lead creation failed")
 
     return {
         "source": "ai",
-        **result,
         "lead": {
-            "lead_id": result["lead_id"],
+            "lead_id": lead_id,
             **lead_fields,
         },
     }
-
 
 @app.post("/trello-webhook")
 @app.post("/trello-webhook/")
